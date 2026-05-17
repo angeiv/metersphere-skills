@@ -3,12 +3,19 @@ import json
 import sys
 from pathlib import Path
 
-ROOT_DIR = Path(__file__).resolve().parents[2]
-if str(ROOT_DIR) not in sys.path:
-    sys.path.insert(0, str(ROOT_DIR))
+REPO_ROOT = Path(__file__).resolve().parents[2]
+PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 
-from skills.scripts import ms_client
-from skills.scripts import ms_review_summary
+try:
+    if str(REPO_ROOT) not in sys.path:
+        sys.path.insert(0, str(REPO_ROOT))
+    from skills.scripts import ms_client
+    from skills.scripts import ms_review_summary
+except ModuleNotFoundError:
+    if str(PACKAGE_ROOT) not in sys.path:
+        sys.path.insert(0, str(PACKAGE_ROOT))
+    from scripts import ms_client
+    from scripts import ms_review_summary
 
 
 def parse_steps(steps_value):

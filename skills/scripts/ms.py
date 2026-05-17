@@ -3,11 +3,17 @@ import json
 import sys
 from pathlib import Path
 
-ROOT_DIR = Path(__file__).resolve().parents[2]
-if str(ROOT_DIR) not in sys.path:
-    sys.path.insert(0, str(ROOT_DIR))
+REPO_ROOT = Path(__file__).resolve().parents[2]
+PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 
-from skills.scripts import ms_client
+try:
+    if str(REPO_ROOT) not in sys.path:
+        sys.path.insert(0, str(REPO_ROOT))
+    from skills.scripts import ms_client
+except ModuleNotFoundError:
+    if str(PACKAGE_ROOT) not in sys.path:
+        sys.path.insert(0, str(PACKAGE_ROOT))
+    from scripts import ms_client
 
 
 def usage() -> None:
@@ -228,7 +234,10 @@ def main() -> None:
         return
 
     if command == "reviewed-summary":
-        from skills.scripts import ms_review_summary
+        try:
+            from skills.scripts import ms_review_summary
+        except ModuleNotFoundError:
+            from scripts import ms_review_summary
 
         project_id = sys.argv[2] if len(sys.argv) > 2 else config.project_id
         keyword = sys.argv[3] if len(sys.argv) > 3 else ""
@@ -238,7 +247,10 @@ def main() -> None:
         return
 
     if command == "case-report":
-        from skills.scripts import ms_case_report
+        try:
+            from skills.scripts import ms_case_report
+        except ModuleNotFoundError:
+            from scripts import ms_case_report
 
         if len(sys.argv) != 4:
             ms_client.die("用法: ms case-report <projectId> <caseId>")
@@ -246,8 +258,12 @@ def main() -> None:
         return
 
     if command == "case-report-md":
-        from skills.scripts import ms_case_report
-        from skills.scripts import ms_case_report_md
+        try:
+            from skills.scripts import ms_case_report
+            from skills.scripts import ms_case_report_md
+        except ModuleNotFoundError:
+            from scripts import ms_case_report
+            from scripts import ms_case_report_md
 
         if len(sys.argv) != 4:
             ms_client.die("用法: ms case-report-md <projectId> <caseId>")
