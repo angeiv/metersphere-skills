@@ -1,189 +1,93 @@
 #!/usr/bin/env python3
 import json
-import os
-import subprocess
 import sys
-import time
-import uuid
 from pathlib import Path
-from urllib import request, error
 
-SCRIPT_DIR = Path(__file__).resolve().parent
-SKILL_DIR = SCRIPT_DIR.parent
-ENV_FILE = SKILL_DIR / '.env'
+ROOT_DIR = Path(__file__).resolve().parents[2]
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
 
-if ENV_FILE.exists():
-    for line in ENV_FILE.read_text(encoding='utf-8').splitlines():
-        line = line.strip()
-        if line and not line.startswith('#') and '=' in line:
-            k, v = line.split('=', 1)
-            os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
-
-BASE_URL = os.environ.get('METERSPHERE_BASE_URL', '').rstrip('/')
-ACCESS_KEY = os.environ.get('METERSPHERE_ACCESS_KEY') or os.environ.get('METERSPHERE_ACCESS_KEY', '')
-SECRET_KEY = os.environ.get('METERSPHERE_SECRET_KEY') or os.environ.get('METERSPHERE_SECRET_KEY', '')
+from skills.scripts import ms_client
+from skills.scripts import ms_review_summary
 
 
-def die(msg: str):
-    print(msg, file=sys.stderr)
-    sys.exit(1)
+def parse_steps(steps_value):
+    if isinstance(steps_value, list):
+        return steps_value
+    if isinstance(steps_value, str) and steps_value:
+        try:
+            return json.loads(steps_value)
+        except Exception:
+            return []
+    return []
 
 
-def signature() -> str:
-    plain = f"{ACCESS_KEY}|{uuid.uuid4()}|{int(time.time() * 1000)}"
-    proc = subprocess.run([
-        'openssl', 'enc', '-aes-128-cbc',
-        '-K', SECRET_KEY.encode('utf-8').hex(),
-        '-iv', ACCESS_KEY.encode('utf-8').hex(),
-        '-base64', '-A', '-nosalt'
-    ], input=plain.encode('utf-8'), capture_output=True, check=True)
-    return proc.stdout.decode('utf-8').strip()
+def normalize_tags(raw_tags):
+    if isinstance(raw_tags, list):
+        return raw_tags
+    if isinstance(raw_tags, str) and raw_tags:
+        return [tag.strip() for tag in raw_tags.split(",") if tag.strip()]
+    return []
 
 
-def headers():
-    if not BASE_URL or not ACCESS_KEY or not SECRET_KEY:
-        die('缺少 METERSPHERE_BASE_URL / METERSPHERE_ACCESS_KEY / METERSPHERE_SECRET_KEY')
+def build_summary(detail: dict, bugs: list[dict], reviews: list[dict]) -> dict:
     return {
-        'Content-Type': 'application/json',
-        'accessKey': ACCESS_KEY,
-        'signature': signature(),
+        "caseId": detail.get("id"),
+        "num": detail.get("num"),
+        "name": detail.get("name"),
+        "moduleId": detail.get("nodeId"),
+        "moduleName": detail.get("nodePath"),
+        "projectId": detail.get("projectId"),
+        "versionId": detail.get("versionId"),
+        "versionName": detail.get("versionName"),
+        "stepModel": detail.get("stepModel"),
+        "priority": detail.get("priority"),
+        "reviewStatus": detail.get("reviewStatus"),
+        "lastExecuteResult": detail.get("lastExecuteResult"),
+        "bugCount": len(bugs),
+        "caseReviewCount": len(reviews),
+        "reviewed": bool(reviews),
     }
 
 
-def post_json(path: str, body: dict):
-    req = request.Request(
-        BASE_URL + path,
-        data=json.dumps(body, ensure_ascii=False).encode('utf-8'),
-        headers=headers(),
-        method='POST',
-    )
-    with request.urlopen(req, timeout=60) as resp:
-        return json.loads(resp.read().decode('utf-8', errors='replace'))
-
-
-def get_json(path: str):
-    req = request.Request(BASE_URL + path, headers=headers(), method='GET')
-    with request.urlopen(req, timeout=60) as resp:
-        return json.loads(resp.read().decode('utf-8', errors='replace'))
-
-
-def case_detail(case_id: str):
-    return (get_json(f'/functional/case/detail/{case_id}').get('data') or {})
-
-
-def case_reviews(case_id: str):
-    data = post_json('/functional/case/review/page', {'caseId': case_id, 'current': 1, 'pageSize': 100}).get('data') or {}
-    return data.get('list') or []
-
-
-def _bug_key(bug: dict):
-    return bug.get('bugId') or bug.get('id') or bug.get('num') or json.dumps(bug, ensure_ascii=False, sort_keys=True)
-
-
-def case_bugs(project_id: str, case_id: str):
-    lists = []
-
-    data1 = post_json('/functional/case/test/associate/bug/page', {
-        'projectId': project_id,
-        'sourceId': case_id,
-        'current': 1,
-        'pageSize': 100,
-    }).get('data') or {}
-    lists.extend(data1.get('list') or [])
-
-    data2 = post_json('/functional/case/test/has/associate/bug/page', {
-        'projectId': project_id,
-        'caseId': case_id,
-        'testPlanCaseId': '',
-        'current': 1,
-        'pageSize': 100,
-    }).get('data') or {}
-    lists.extend(data2.get('list') or [])
-
-    merged = {}
-    for bug in lists:
-        key = _bug_key(bug)
-        if key not in merged:
-            merged[key] = bug
-        else:
-            merged[key] = {**merged[key], **{k: v for k, v in bug.items() if v not in (None, '', [], {})}}
-    return list(merged.values())
-
-
-def build_summary(detail: dict, bugs: list, reviews: list):
-    return {
-        'caseId': detail.get('id'),
-        'num': detail.get('num'),
-        'name': detail.get('name'),
-        'moduleId': detail.get('moduleId'),
-        'moduleName': detail.get('moduleName'),
-        'projectId': detail.get('projectId'),
-        'versionId': detail.get('versionId'),
-        'versionName': detail.get('versionName'),
-        'caseEditType': detail.get('caseEditType'),
-        'functionalPriority': detail.get('functionalPriority'),
-        'reviewStatus': detail.get('reviewStatus'),
-        'lastExecuteResult': detail.get('lastExecuteResult'),
-        'bugCount': max(int(detail.get('bugCount') or 0), len(bugs)),
-        'caseReviewCount': detail.get('caseReviewCount', len(reviews)),
-        'testPlanCount': detail.get('testPlanCount', 0),
-        'demandCount': detail.get('demandCount', 0),
-        'reviewed': len(reviews) > 0,
-    }
-
-
-def main():
-    if len(sys.argv) != 3:
-        die('用法: ms_case_report.py <projectId> <caseId>')
-    project_id = sys.argv[1]
-    case_id = sys.argv[2]
-
-    detail = case_detail(case_id)
-    reviews = case_reviews(case_id)
-    bugs = case_bugs(project_id, case_id)
+def build_case_report(project_id: str, case_id: str) -> dict:
+    detail = ms_review_summary.fetch_case_detail(case_id)
+    reviews = ms_review_summary.fetch_case_reviews(project_id, case_id)
+    bugs = ms_review_summary.fetch_case_bugs(project_id, case_id, detail)
 
     result = {
-        'summary': build_summary(detail, bugs, reviews),
-        'detail': {
-            'prerequisite': detail.get('prerequisite'),
-            'description': detail.get('description'),
-            'textDescription': detail.get('textDescription'),
-            'expectedResult': detail.get('expectedResult'),
-            'steps': json.loads(detail.get('steps') or '[]'),
-            'attachments': detail.get('attachments') or [],
-            'tags': detail.get('tags') or [],
+        "summary": build_summary(detail, bugs, reviews),
+        "detail": {
+            "prerequisite": detail.get("prerequisite"),
+            "description": detail.get("remark") or detail.get("description"),
+            "stepDescription": detail.get("stepDescription"),
+            "expectedResult": detail.get("expectedResult"),
+            "steps": parse_steps(detail.get("steps")),
+            "attachments": detail.get("updatedFileList") or detail.get("attachments") or [],
+            "tags": normalize_tags(detail.get("tags")),
         },
-        'bugs': [
+        "bugs": [
             {
-                'id': b.get('id'),
-                'num': b.get('num'),
-                'name': b.get('name'),
-                'statusName': b.get('statusName'),
-                'handleUserName': b.get('handleUserName'),
-                'createUserName': b.get('createUserName'),
-                'createTime': b.get('createTime'),
+                "id": bug.get("id") or bug.get("issuesId"),
+                "num": bug.get("num") or bug.get("customNum"),
+                "name": bug.get("name") or bug.get("title"),
+                "statusName": bug.get("statusName") or bug.get("status"),
+                "handleUserName": bug.get("handleUserName") or bug.get("assigneeName"),
+                "createUserName": bug.get("createUserName") or bug.get("creator"),
+                "createTime": bug.get("createTime"),
             }
-            for b in bugs
+            for bug in bugs
         ],
-        'reviews': [
-            {
-                'reviewId': r.get('reviewId'),
-                'reviewNum': r.get('reviewNum'),
-                'reviewName': r.get('reviewName'),
-                'reviewStatus': r.get('reviewStatus'),
-                'caseReviewStatus': r.get('status'),
-            }
-            for r in reviews
-        ],
+        "reviews": reviews,
     }
-    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return result
 
 
-if __name__ == '__main__':
-    try:
-        main()
-    except error.HTTPError as e:
-        detail = e.read().decode('utf-8', errors='replace')
-        die(f'HTTP {e.code}: {detail}')
-    except Exception as e:
-        die(str(e))
+def main() -> None:
+    if len(sys.argv) != 3:
+        ms_client.die("用法: ms_case_report.py <projectId> <caseId>")
+    print(json.dumps(build_case_report(sys.argv[1], sys.argv[2]), ensure_ascii=False, indent=2))
+
+
+if __name__ == "__main__":
+    main()

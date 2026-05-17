@@ -1,159 +1,194 @@
 #!/usr/bin/env python3
 import json
-import os
-import subprocess
 import sys
-import time
-import uuid
 from pathlib import Path
-from urllib import request, error
 
-SCRIPT_DIR = Path(__file__).resolve().parent
-SKILL_DIR = SCRIPT_DIR.parent
-ENV_FILE = SKILL_DIR / '.env'
+ROOT_DIR = Path(__file__).resolve().parents[2]
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
 
-if ENV_FILE.exists():
-    for line in ENV_FILE.read_text(encoding='utf-8').splitlines():
-        line = line.strip()
-        if line and not line.startswith('#') and '=' in line:
-            k, v = line.split('=', 1)
-            os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
+from skills.scripts import ms_client
 
-BASE_URL = os.environ.get('METERSPHERE_BASE_URL', '').rstrip('/')
-ACCESS_KEY = os.environ.get('METERSPHERE_ACCESS_KEY') or os.environ.get('METERSPHERE_ACCESS_KEY', '')
-SECRET_KEY = os.environ.get('METERSPHERE_SECRET_KEY') or os.environ.get('METERSPHERE_SECRET_KEY', '')
+CASE_LIST_PATH = "/track/test/case/list/{goPage}/{pageSize}"
+CASE_REVIEW_LIST_PATH = "/track/test/case/review/list/{goPage}/{pageSize}"
+REVIEW_CASE_LIST_PATH = "/track/test/review/case/list/{goPage}/{pageSize}"
+CASE_GET_PATH = "/track/test/case/get/{testCaseId}"
+CASE_ISSUES_LIST_PATH = "/track/test/case/issues/list"
 
-
-def die(msg: str):
-    print(msg, file=sys.stderr)
-    sys.exit(1)
+_CASE_REVIEW_INDEX_CACHE: dict[str, dict[str, list[dict]]] = {}
+_CASE_REVIEW_ENTRIES_CACHE: dict[str, list[dict]] = {}
 
 
-def signature() -> str:
-    plain = f"{ACCESS_KEY}|{uuid.uuid4()}|{int(time.time() * 1000)}"
-    proc = subprocess.run([
-        'openssl', 'enc', '-aes-128-cbc',
-        '-K', SECRET_KEY.encode('utf-8').hex(),
-        '-iv', ACCESS_KEY.encode('utf-8').hex(),
-        '-base64', '-A', '-nosalt'
-    ], input=plain.encode('utf-8'), capture_output=True, check=True)
-    return proc.stdout.decode('utf-8').strip()
+def reset_caches() -> None:
+    _CASE_REVIEW_INDEX_CACHE.clear()
+    _CASE_REVIEW_ENTRIES_CACHE.clear()
 
 
-def headers():
-    if not BASE_URL or not ACCESS_KEY or not SECRET_KEY:
-        die('缺少 METERSPHERE_BASE_URL / METERSPHERE_ACCESS_KEY / METERSPHERE_SECRET_KEY')
+def fetch_all_functional_cases(project_id: str, keyword: str) -> list[dict]:
+    config = ms_client.get_config()
+    body = {"projectId": project_id}
+    if keyword:
+        body["name"] = keyword
+    return ms_client.paginated_post(config, CASE_LIST_PATH, body, page_size=100)
+
+
+def fetch_case_detail(case_id: str) -> dict:
+    config = ms_client.get_config()
+    response = ms_client.request_json(config, "GET", CASE_GET_PATH.replace("{testCaseId}", case_id))
+    data = ms_client.extract_data(response)
+    return data if isinstance(data, dict) else {}
+
+
+def fetch_case_review_records(project_id: str) -> list[dict]:
+    config = ms_client.get_config()
+    body = {"projectId": project_id}
+    return ms_client.paginated_post(config, CASE_REVIEW_LIST_PATH, body, page_size=100)
+
+
+def fetch_review_case_items(project_id: str, review_id: str) -> list[dict]:
+    config = ms_client.get_config()
+    body = {"projectId": project_id, "reviewId": review_id}
+    return ms_client.paginated_post(config, REVIEW_CASE_LIST_PATH, body, page_size=100)
+
+
+def reviewer_names(review: dict, item: dict) -> str | None:
+    if item.get("reviewerName"):
+        return item.get("reviewerName")
+    reviewers = review.get("reviewers")
+    if not isinstance(reviewers, list):
+        return None
+    names = [reviewer.get("name") for reviewer in reviewers if isinstance(reviewer, dict) and reviewer.get("name")]
+    return "、".join(names) if names else None
+
+
+def build_review_entry(review: dict, item: dict) -> dict:
     return {
-        'Content-Type': 'application/json',
-        'accessKey': ACCESS_KEY,
-        'signature': signature(),
+        "reviewId": review.get("id") or item.get("reviewId"),
+        "reviewName": review.get("name"),
+        "reviewStatus": review.get("status"),
+        "reviewerName": reviewer_names(review, item),
+        "caseReviewStatus": item.get("reviewStatus") or item.get("status"),
+        "caseId": item.get("caseId") or item.get("id"),
+        "caseName": item.get("name"),
+        "reviewCreateTime": review.get("createTime"),
+        "reviewEndTime": review.get("endTime"),
     }
 
 
-def post_json(path: str, body: dict):
-    req = request.Request(
-        BASE_URL + path,
-        data=json.dumps(body, ensure_ascii=False).encode('utf-8'),
-        headers=headers(),
-        method='POST',
+def build_case_review_index(project_id: str) -> tuple[dict[str, list[dict]], list[dict]]:
+    index: dict[str, list[dict]] = {}
+    entries: list[dict] = []
+    seen: set[tuple[str, str]] = set()
+    for review in fetch_case_review_records(project_id):
+        review_id = review.get("id")
+        if not review_id:
+            continue
+        try:
+            review_case_items = fetch_review_case_items(project_id, review_id)
+        except SystemExit:
+            continue
+        for item in review_case_items:
+            case_id = item.get("caseId") or item.get("id")
+            if not case_id:
+                continue
+            unique_key = (review_id, case_id)
+            if unique_key in seen:
+                continue
+            seen.add(unique_key)
+            entry = build_review_entry(review, item)
+            index.setdefault(case_id, []).append(entry)
+            entries.append(entry)
+
+    for case_entries in index.values():
+        case_entries.sort(key=lambda item: item.get("reviewCreateTime") or 0, reverse=True)
+    entries.sort(
+        key=lambda item: ((item.get("reviewCreateTime") or 0), str(item.get("reviewId") or ""), str(item.get("caseId") or "")),
+        reverse=True,
     )
-    with request.urlopen(req, timeout=60) as resp:
-        return json.loads(resp.read().decode('utf-8', errors='replace'))
+    return index, entries
 
 
-def get_json(path: str):
-    req = request.Request(BASE_URL + path, headers=headers(), method='GET')
-    with request.urlopen(req, timeout=60) as resp:
-        return json.loads(resp.read().decode('utf-8', errors='replace'))
+def get_case_review_index(project_id: str) -> dict[str, list[dict]]:
+    cached = _CASE_REVIEW_INDEX_CACHE.get(project_id)
+    if cached is None:
+        cached, entries = build_case_review_index(project_id)
+        _CASE_REVIEW_INDEX_CACHE[project_id] = cached
+        _CASE_REVIEW_ENTRIES_CACHE[project_id] = entries
+    return cached
 
 
-def fetch_all_functional_cases(project_id: str, keyword: str):
-    current = 1
-    page_size = 100
-    rows = []
-    while True:
-        body = {'projectId': project_id, 'current': current, 'pageSize': page_size}
-        if keyword:
-            body['keyword'] = keyword
-        data = post_json('/functional/case/page', body).get('data') or {}
-        lst = data.get('list') or []
-        rows.extend(lst)
-        total = data.get('total') or len(rows)
-        if len(rows) >= total or not lst:
-            break
-        current += 1
-    return rows
+def fetch_all_case_review_entries(project_id: str) -> list[dict]:
+    get_case_review_index(project_id)
+    return list(_CASE_REVIEW_ENTRIES_CACHE.get(project_id, []))
 
 
-def fetch_case_reviews(case_id: str):
-    data = post_json('/functional/case/review/page', {'caseId': case_id, 'current': 1, 'pageSize': 100}).get('data') or {}
-    return data.get('list') or []
+def fetch_case_reviews(project_id: str, case_id: str) -> list[dict]:
+    return list(get_case_review_index(project_id).get(case_id, []))
 
 
-def fetch_case_detail(case_id: str):
-    return (get_json(f'/functional/case/detail/{case_id}').get('data') or {})
+def fetch_case_bugs(project_id: str, case_id: str, detail: dict | None = None) -> list[dict]:
+    config = ms_client.get_config()
+    response = ms_client.request_json_soft(
+        config,
+        "POST",
+        CASE_ISSUES_LIST_PATH,
+        {"projectId": project_id, "caseId": case_id},
+    )
+    if response is not None:
+        data = ms_client.extract_data(response)
+        if isinstance(data, list):
+            return data
+        if isinstance(data, dict) and isinstance(data.get("list"), list):
+            return data["list"]
+
+    case_detail = detail if isinstance(detail, dict) else fetch_case_detail(case_id)
+    issue_list = case_detail.get("issueList")
+    return issue_list if isinstance(issue_list, list) else []
 
 
-def main():
+def build_case_summary(project_id: str, case_row: dict) -> dict:
+    case_id = case_row.get("id")
+    reviews = fetch_case_reviews(project_id, case_id)
+    issue_list = case_row.get("issueList")
+    bugs = issue_list if isinstance(issue_list, list) else []
+    review_status = case_row.get("reviewStatus")
+    reviewed = bool(reviews) or review_status not in {None, "", "Prepare"}
+    return {
+        "caseId": case_id,
+        "num": case_row.get("num"),
+        "name": case_row.get("name"),
+        "priority": case_row.get("priority"),
+        "stepModel": case_row.get("stepModel"),
+        "reviewStatus": review_status,
+        "bugCount": len(bugs),
+        "reviewCount": len(reviews),
+        "reviewed": reviewed,
+        "reviews": reviews,
+    }
+
+
+def build_summary_report(project_id: str, keyword: str) -> dict:
+    rows = fetch_all_functional_cases(project_id, keyword)
+    get_case_review_index(project_id)
+    summaries = [build_case_summary(project_id, row) for row in rows]
+    return {
+        "projectId": project_id,
+        "keyword": keyword,
+        "totalCases": len(summaries),
+        "reviewedCases": sum(1 for item in summaries if item["reviewed"]),
+        "unreviewedCases": sum(1 for item in summaries if not item["reviewed"]),
+        "totalBugLinks": sum(item["bugCount"] for item in summaries),
+        "list": summaries,
+    }
+
+
+def main() -> None:
     if len(sys.argv) < 2:
-        die('用法: ms_review_summary.py <projectId> [keyword]')
+        ms_client.die("用法: ms_review_summary.py <projectId> [keyword]")
     project_id = sys.argv[1]
-    keyword = sys.argv[2] if len(sys.argv) > 2 else ''
-
-    cases = fetch_all_functional_cases(project_id, keyword)
-    out = []
-    for c in cases:
-        case_id = c.get('id')
-        review_items = fetch_case_reviews(case_id)
-        detail = fetch_case_detail(case_id)
-        
-        # 获取用例的评审状态
-        review_status = detail.get('reviewStatus')
-
-        # 新逻辑：review_status in ['PASS', 'UN_PASS']  # 只有评审完成
-        is_reviewed = review_status in ['PASS', 'UN_PASS']
-        
-        out.append({
-            'caseId': case_id,
-            'num': c.get('num'),
-            'name': c.get('name'),
-            'caseEditType': c.get('caseEditType'),
-            'reviewStatus': review_status,
-            'lastExecuteResult': detail.get('lastExecuteResult'),
-            'bugCount': detail.get('bugCount', 0),
-            'caseReviewCount': detail.get('caseReviewCount', 0),
-            'testPlanCount': detail.get('testPlanCount', 0),
-            'demandCount': detail.get('demandCount', 0),
-            'reviewCount': len(review_items),
-            'reviewed': is_reviewed,  # 使用修复后的逻辑
-            'reviews': [
-                {
-                    'reviewId': r.get('reviewId'),
-                    'reviewNum': r.get('reviewNum'),
-                    'reviewName': r.get('reviewName'),
-                    'reviewStatus': r.get('reviewStatus'),
-                    'caseReviewStatus': r.get('status'),
-                }
-                for r in review_items
-            ],
-        })
-
-    print(json.dumps({
-        'projectId': project_id,
-        'keyword': keyword,
-        'totalCases': len(out),
-        'reviewedCases': sum(1 for x in out if x['reviewed']),
-        'unreviewedCases': sum(1 for x in out if not x['reviewed']),
-        'totalBugLinks': sum(int(x.get('bugCount') or 0) for x in out),
-        'list': out,
-    }, ensure_ascii=False, indent=2))
+    keyword = sys.argv[2] if len(sys.argv) > 2 else ""
+    print(json.dumps(build_summary_report(project_id, keyword), ensure_ascii=False, indent=2))
 
 
-if __name__ == '__main__':
-    try:
-        main()
-    except error.HTTPError as e:
-        detail = e.read().decode('utf-8', errors='replace')
-        die(f'HTTP {e.code}: {detail}')
-    except Exception as e:
-        die(str(e))
+if __name__ == "__main__":
+    main()

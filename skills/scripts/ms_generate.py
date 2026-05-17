@@ -6,157 +6,146 @@ import sys
 import urllib.request
 from pathlib import Path
 
-USAGE = '''
+ROOT_DIR = Path(__file__).resolve().parents[2]
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
+
+from skills.scripts import ms_client
+
+USAGE = """
 用法:
-  ms_generate.py functional-cases <projectId> <moduleId> <templateId> <requirement-file>
+  ms_generate.py functional-cases <projectId> <moduleId> <requirement-file>
   ms_generate.py api-import <projectId> <moduleId> <openapi-file-or-url>
-'''
+"""
 
 
 def load_text(path: str) -> str:
-    p = Path(path)
-    if p.exists():
-        return p.read_text(encoding='utf-8')
-    if path.startswith('http://') or path.startswith('https://'):
-        with urllib.request.urlopen(path, timeout=30) as r:
-            return r.read().decode('utf-8', errors='replace')
-    raise FileNotFoundError(path)
+    candidate = Path(path)
+    if candidate.exists():
+        return candidate.read_text(encoding="utf-8")
+    if path.startswith(("http://", "https://")):
+        with urllib.request.urlopen(path, timeout=30) as response:
+            return response.read().decode("utf-8", errors="replace")
+    return path
 
 
-def split_requirement_items(text: str):
-    lines = [x.strip() for x in text.splitlines() if x.strip()]
-    items = []
+def split_requirement_items(text: str) -> list[str]:
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    items: list[str] = []
     for line in lines:
-        clean = re.sub(r'^[\-\*\d\.\)\(\s]+', '', line).strip()
-        if len(clean) >= 4:
-            items.append(clean)
+        cleaned = re.sub(r"^[\-\*\d\.\)\(\s]+", "", line).strip()
+        if len(cleaned) >= 2:
+            items.append(cleaned)
     if not items:
         items = [text.strip()]
-    seen = []
+    unique_items: list[str] = []
     for item in items:
-        if item not in seen:
-            seen.append(item)
-    return seen[:50]
+        if item and item not in unique_items:
+            unique_items.append(item)
+    return unique_items[:50]
 
 
-def infer_priority(text: str):
-    t = text.lower()
-    if any(k in t for k in ['登录', '支付', '权限', '下单', '注册', '核心', 'critical', 'login', 'pay']):
-        return 'P0'
-    if any(k in t for k in ['查询', '搜索', '导出', '上传', '保存']):
-        return 'P1'
-    return 'P2'
+def infer_priority(text: str) -> str:
+    lowered = text.lower()
+    if any(token in lowered for token in ["登录", "支付", "权限", "下单", "critical", "login", "pay"]):
+        return "P0"
+    if any(token in lowered for token in ["查询", "搜索", "导出", "上传", "保存", "search", "query"]):
+        return "P1"
+    return "P2"
 
 
-def infer_tags(text: str):
-    tags = []
+def infer_tags(text: str) -> str:
     mapping = {
-        '登录': '登录', '注册': '注册', '支付': '支付', '权限': '权限', '查询': '查询', '搜索': '搜索',
-        '导出': '导出', '导入': '导入', '上传': '上传', '下载': '下载', 'api': '接口', '接口': '接口'
+        "登录": "登录",
+        "注册": "注册",
+        "支付": "支付",
+        "权限": "权限",
+        "查询": "查询",
+        "搜索": "搜索",
+        "导出": "导出",
+        "导入": "导入",
+        "上传": "上传",
+        "下载": "下载",
+        "api": "接口",
+        "接口": "接口",
     }
-    for k, v in mapping.items():
-        if k.lower() in text.lower() and v not in tags:
-            tags.append(v)
-    return tags[:5]
+    tags: list[str] = []
+    for key, value in mapping.items():
+        if key.lower() in text.lower() and value not in tags:
+            tags.append(value)
+    return ",".join(tags[:5])
 
 
-def build_case_variants(item: str):
+def build_test_steps(requirement: str, variant_type: int) -> list[dict[str, str | int]]:
+    if variant_type == 1:
+        return [
+            {"num": 1, "desc": "准备测试环境", "result": "环境准备就绪"},
+            {"num": 2, "desc": f"执行{requirement}操作", "result": "操作执行成功"},
+            {"num": 3, "desc": "验证业务结果", "result": "结果符合预期"},
+        ]
+    if variant_type == 2:
+        return [
+            {"num": 1, "desc": "准备测试环境", "result": "环境准备就绪"},
+            {"num": 2, "desc": f"输入异常数据执行{requirement}", "result": "系统拦截异常输入"},
+            {"num": 3, "desc": "验证错误提示", "result": "错误提示清晰明确"},
+        ]
     return [
-        (f'{item}-主流程', item, '系统按需求正确处理主流程，结果符合预期'),
-        (f'{item}-异常场景', f'{item}，并覆盖异常输入、非法输入、缺少必要信息等情况', '系统对异常输入给出正确拦截、提示或失败处理'),
-        (f'{item}-边界场景', f'{item}，并覆盖长度边界、空值边界、数量边界、状态切换边界', '系统在边界条件下行为稳定，结果符合设计预期'),
+        {"num": 1, "desc": "准备测试环境", "result": "环境准备就绪"},
+        {"num": 2, "desc": f"输入边界值执行{requirement}", "result": "系统正确处理边界值"},
+        {"num": 3, "desc": "验证边界条件结果", "result": "边界条件下系统行为稳定"},
     ]
 
 
-def build_functional_cases(project_id: str, module_id: str, template_id: str, text: str):
-    items = split_requirement_items(text)
-    out = []
-    for item in items:
+def build_prerequisite(requirement: str) -> str:
+    if "登录" in requirement:
+        return "用户已注册账号且系统正常运行"
+    if "支付" in requirement or "下单" in requirement:
+        return "用户已登录且账户余额充足"
+    if "查询" in requirement or "搜索" in requirement:
+        return "系统中存在相关数据"
+    return "系统正常运行"
+
+
+def build_case_variants(item: str) -> list[tuple[str, str]]:
+    return [
+        (f"{item}-主流程", "主流程"),
+        (f"{item}-异常场景", "异常场景"),
+        (f"{item}-边界场景", "边界场景"),
+    ]
+
+
+def resolve_version_for_draft(project_id: str) -> str:
+    config = ms_client.get_config()
+    if config.default_version_id:
+        return config.default_version_id
+    if config.base_url and config.access_key and config.secret_key:
+        return ms_client.resolve_default_version_id(config, project_id)
+    return ""
+
+
+def build_functional_cases(project_id: str, module_id: str, text: str) -> list[dict]:
+    version_id = resolve_version_for_draft(project_id)
+    payloads: list[dict] = []
+    for item in split_requirement_items(text):
         priority = infer_priority(item)
         tags = infer_tags(item)
-        for idx, (name, desc, expected) in enumerate(build_case_variants(item), 1):
-            # 根据用例类型构建更合理的测试步骤
-            steps = build_test_steps(item, idx)
-            
-            out.append({
-                'projectId': project_id,
-                'templateId': template_id,
-                'versionId': get_default_version_id(project_id),  # 添加versionId
-                'moduleId': module_id,
-                'name': name[:255],
-                'caseEditType': 'STEP',  # 改为STEP模式
-                'steps': json.dumps(steps, ensure_ascii=False),  # STEP模式需要steps字段
-                'prerequisite': build_prerequisite(item),  # 根据需求生成前置条件
-                'remark': f'根据需求自动生成的功能用例，优先级={priority}，类型={idx}',
-                'aiCreate': True,
-                'customFields': [],
-                'tags': tags,
-            })
-    return out[:120]
-
-def build_test_steps(requirement: str, case_type: int) -> list:
-    """根据需求构建测试步骤"""
-    steps = []
-    
-    if case_type == 1:  # 主流程
-        steps = [
-            {"num": 0, "desc": "准备测试环境", "result": "环境准备就绪"},
-            {"num": 1, "desc": f"执行{requirement}操作", "result": "操作执行成功"},
-            {"num": 2, "desc": "验证操作结果", "result": "结果符合预期"}
-        ]
-    elif case_type == 2:  # 异常场景
-        steps = [
-            {"num": 0, "desc": "准备测试环境", "result": "环境准备就绪"},
-            {"num": 1, "desc": f"输入异常数据执行{requirement}", "result": "系统正确拦截异常输入"},
-            {"num": 2, "desc": "验证错误提示", "result": "错误提示清晰明确"}
-        ]
-    else:  # 边界场景
-        steps = [
-            {"num": 0, "desc": "准备测试环境", "result": "环境准备就绪"},
-            {"num": 1, "desc": f"输入边界值执行{requirement}", "result": "系统正确处理边界值"},
-            {"num": 2, "desc": "验证边界条件结果", "result": "边界条件下系统行为稳定"}
-        ]
-    
-    return steps
-
-def build_prerequisite(requirement: str) -> str:
-    """根据需求生成前置条件"""
-    if '登录' in requirement:
-        return "用户已注册账号且系统正常运行"
-    elif '支付' in requirement or '下单' in requirement:
-        return "用户已登录且账户余额充足"
-    elif '查询' in requirement or '搜索' in requirement:
-        return "系统中存在相关数据"
-    else:
-        return "系统正常运行"
-
-def get_default_version_id(project_id: str) -> str:
-    """获取项目的默认versionId"""
-    import os
-    
-    # 首先尝试从环境变量获取
-    env_version_id = os.environ.get('METERSPHERE_DEFAULT_VERSION_ID')
-    if env_version_id:
-        return env_version_id
-    
-    # 如果没有环境变量，使用硬编码映射
-    version_map = {
-        '1163437937827840': '1163437937827887',
-        # 可以添加其他项目的映射
-    }
-    
-    version_id = version_map.get(project_id, '')
-    if not version_id:
-        print(f"警告: 项目 {project_id} 没有默认的 versionId 映射。建议设置 METERSPHERE_DEFAULT_VERSION_ID 环境变量。")
-        print(f"警告: 如果未设置环境变量，将返回空字符串，可能导致创建失败。")
-        return ''
-    
-    # 如果使用硬编码值，发出警告
-    if project_id == '1163437937827840':
-        print(f"警告: 使用硬编码的 versionId (1163437937827887) 对应项目 1163437937827840。")
-        print(f"警告: 请确保这是正确的项目 ID，或设置 METERSPHERE_DEFAULT_VERSION_ID 环境变量。")
-    
-    return version_id
+        for index, (name, label) in enumerate(build_case_variants(item), start=1):
+            payloads.append(
+                {
+                    "projectId": project_id,
+                    "nodeId": module_id,
+                    "name": name[:255],
+                    "priority": priority,
+                    "stepModel": "STEP",
+                    "steps": json.dumps(build_test_steps(item, index), ensure_ascii=False),
+                    "prerequisite": build_prerequisite(item),
+                    "remark": f"根据需求自动生成的功能用例，类型={label}",
+                    "versionId": version_id,
+                    "tags": tags,
+                    "customFields": "[]",
+                }
+            )
+    return payloads[:120]
 
 
 def parse_openapi_source(text: str):
@@ -165,280 +154,337 @@ def parse_openapi_source(text: str):
     except Exception:
         try:
             import yaml  # type: ignore
+
             return yaml.safe_load(text)
-        except Exception as e:
-            raise RuntimeError('无法解析 OpenAPI/Swagger 文档，请提供 JSON 或 YAML') from e
+        except Exception as exc:
+            raise RuntimeError("无法解析 OpenAPI/Swagger 文档，请提供 JSON 或 YAML") from exc
 
 
-def sample_value(schema_type: str, name: str = ''):
-    if schema_type == 'integer':
-        return '1'
-    if schema_type == 'number':
-        return '1'
-    if schema_type == 'boolean':
-        return 'true'
-    if 'id' in name.lower():
-        return '1001'
-    return 'test'
+def sample_value(schema_type: str, name: str = ""):
+    if schema_type == "integer":
+        return "1"
+    if schema_type == "number":
+        return "1"
+    if schema_type == "boolean":
+        return "true"
+    if "id" in name.lower():
+        return "1001"
+    return "test"
 
 
 def json_example_from_schema(schema: dict):
     if not isinstance(schema, dict):
         return None
-    if 'example' in schema:
-        return schema['example']
-    t = schema.get('type')
-    if t == 'object':
-        props = schema.get('properties') or {}
+    if "example" in schema:
+        return schema["example"]
+    schema_type = schema.get("type")
+    if schema_type == "object":
         result = {}
-        for k, v in props.items():
-            val = json_example_from_schema(v)
-            result[k] = val if val is not None else sample_value((v or {}).get('type', 'string'), k)
+        for key, value in (schema.get("properties") or {}).items():
+            example_value = json_example_from_schema(value)
+            result[key] = example_value if example_value is not None else sample_value((value or {}).get("type", "string"), key)
         return result
-    if t == 'array':
-        item = json_example_from_schema((schema.get('items') or {}))
-        return [item] if item is not None else []
-    if t == 'integer':
+    if schema_type == "array":
+        item_value = json_example_from_schema(schema.get("items") or {})
+        return [item_value] if item_value is not None else []
+    if schema_type == "integer":
         return 1
-    if t == 'number':
+    if schema_type == "number":
         return 1
-    if t == 'boolean':
+    if schema_type == "boolean":
         return True
-    return 'test'
+    return "test"
 
 
-def build_assertions(success_expected='200'):
+def build_assertions(expected_code: str = "200") -> list[dict]:
     return [
         {
-            'enable': True,
-            'name': '状态码断言',
-            'assertionType': 'RESPONSE_CODE',
-            'condition': 'EQUALS',
-            'expectedValue': success_expected,
+            "enable": True,
+            "name": "状态码断言",
+            "assertionType": "RESPONSE_CODE",
+            "condition": "EQUALS",
+            "expectedValue": expected_code,
         }
     ]
 
 
-def build_http_request(method: str, path: str, summary: str, operation: dict):
-    body_type = 'NONE'
-    json_value = ''
-    if 'requestBody' in operation:
-        content = operation.get('requestBody', {}).get('content', {})
-        if 'application/json' in content:
-            body_type = 'JSON'
-            schema = content['application/json'].get('schema') or {}
-            ex = content['application/json'].get('example')
-            if ex is None:
-                examples = content['application/json'].get('examples') or {}
+def build_http_request(method: str, path: str, summary: str, operation: dict) -> dict:
+    body_type = "NONE"
+    json_value = ""
+    if "requestBody" in operation:
+        content = operation.get("requestBody", {}).get("content", {})
+        if "application/json" in content:
+            body_type = "JSON"
+            schema = content["application/json"].get("schema") or {}
+            example_value = content["application/json"].get("example")
+            if example_value is None:
+                examples = content["application/json"].get("examples") or {}
                 if isinstance(examples, dict) and examples:
                     first = next(iter(examples.values()))
-                    ex = first.get('value') if isinstance(first, dict) else None
-            if ex is None:
-                ex = json_example_from_schema(schema)
-            json_value = json.dumps(ex if ex is not None else {}, ensure_ascii=False, indent=2)
-        elif 'application/x-www-form-urlencoded' in content:
-            body_type = 'WWW_FORM'
-        elif 'multipart/form-data' in content:
-            body_type = 'FORM_DATA'
+                    example_value = first.get("value") if isinstance(first, dict) else None
+            if example_value is None:
+                example_value = json_example_from_schema(schema)
+            json_value = json.dumps(example_value if example_value is not None else {}, ensure_ascii=False, indent=2)
+        elif "application/x-www-form-urlencoded" in content:
+            body_type = "WWW_FORM"
+        elif "multipart/form-data" in content:
+            body_type = "FORM_DATA"
         else:
-            body_type = 'RAW'
+            body_type = "RAW"
+
     query = []
     rest = []
     headers = []
-    for p in operation.get('parameters', []) or []:
-        schema = p.get('schema') or {}
-        value = p.get('example')
+    for parameter in operation.get("parameters", []) or []:
+        schema = parameter.get("schema") or {}
+        value = parameter.get("example")
         if value is None:
-            value = sample_value(schema.get('type', 'string'), p.get('name', ''))
+            value = sample_value(schema.get("type", "string"), parameter.get("name", ""))
         entry = {
-            'key': p.get('name', ''),
-            'value': str(value),
-            'enable': True,
-            'description': p.get('description'),
-            'paramType': schema.get('type', 'string') or 'string',
-            'required': p.get('required', False),
-            'minLength': None,
-            'maxLength': None,
-            'encode': False,
+            "key": parameter.get("name", ""),
+            "value": str(value),
+            "enable": True,
+            "description": parameter.get("description"),
+            "paramType": schema.get("type", "string") or "string",
+            "required": parameter.get("required", False),
+            "minLength": None,
+            "maxLength": None,
+            "encode": False,
         }
-        where = p.get('in')
-        if where == 'query':
+        location = parameter.get("in")
+        if location == "query":
             query.append(entry)
-        elif where == 'path':
+        elif location == "path":
             rest.append(entry)
-        elif where == 'header':
-            headers.append({'key': entry['key'], 'value': entry['value'], 'enable': True, 'description': entry['description']})
+        elif location == "header":
+            headers.append(
+                {
+                    "key": entry["key"],
+                    "value": entry["value"],
+                    "enable": True,
+                    "description": entry["description"],
+                }
+            )
+
     body = {
-        'bodyType': body_type,
-        'noneBody': {} if body_type == 'NONE' else None,
-        'formDataBody': {'formValues': []},
-        'wwwFormBody': {'formValues': []},
-        'jsonBody': {'enableJsonSchema': body_type == 'JSON', 'jsonValue': json_value, 'jsonSchema': None},
-        'xmlBody': {'value': ''},
-        'rawBody': {'value': ''},
-        'binaryBody': {'description': '', 'file': None},
+        "bodyType": body_type,
+        "noneBody": {} if body_type == "NONE" else None,
+        "formDataBody": {"formValues": []},
+        "wwwFormBody": {"formValues": []},
+        "jsonBody": {"enableJsonSchema": body_type == "JSON", "jsonValue": json_value, "jsonSchema": None},
+        "xmlBody": {"value": ""},
+        "rawBody": {"value": ""},
+        "binaryBody": {"description": "", "file": None},
     }
     return {
-        'polymorphicName': 'MsHTTPElement',
-        'stepId': '',
-        'resourceId': '',
-        'projectId': None,
-        'name': summary or f'{method.upper()} {path}',
-        'enable': True,
-        'children': [{
-            'polymorphicName': 'MsCommonElement',
-            'stepId': None,
-            'resourceId': None,
-            'projectId': None,
-            'name': None,
-            'enable': True,
-            'children': [],
-            'parent': None,
-            'csvIds': None,
-            'preProcessorConfig': {'enableGlobal': False, 'processors': []},
-            'postProcessorConfig': {'enableGlobal': False, 'processors': []},
-            'assertionConfig': {'enableGlobal': False, 'assertions': build_assertions('200')},
-        }],
-        'parent': None,
-        'csvIds': None,
-        'customizeRequest': False,
-        'customizeRequestEnvEnable': False,
-        'path': path,
-        'method': method.upper(),
-        'body': body,
-        'headers': headers,
-        'rest': rest,
-        'query': query,
-        'otherConfig': {'connectTimeout': 60000, 'responseTimeout': 60000, 'certificateAlias': '', 'followRedirects': True, 'autoRedirects': False},
-        'authConfig': {'authType': 'NONE', 'basicAuth': {'userName': '', 'password': '', 'valid': False}, 'digestAuth': {'userName': '', 'password': '', 'valid': False}, 'httpauthValid': False},
-        'moduleId': '',
-        'num': None,
-        'mockNum': None,
+        "polymorphicName": "MsHTTPElement",
+        "stepId": "",
+        "resourceId": "",
+        "projectId": None,
+        "name": summary or f"{method.upper()} {path}",
+        "enable": True,
+        "children": [
+            {
+                "polymorphicName": "MsCommonElement",
+                "stepId": None,
+                "resourceId": None,
+                "projectId": None,
+                "name": None,
+                "enable": True,
+                "children": [],
+                "parent": None,
+                "csvIds": None,
+                "preProcessorConfig": {"enableGlobal": False, "processors": []},
+                "postProcessorConfig": {"enableGlobal": False, "processors": []},
+                "assertionConfig": {"enableGlobal": False, "assertions": build_assertions("200")},
+            }
+        ],
+        "parent": None,
+        "csvIds": None,
+        "customizeRequest": False,
+        "customizeRequestEnvEnable": False,
+        "path": path,
+        "method": method.upper(),
+        "body": body,
+        "headers": headers,
+        "rest": rest,
+        "query": query,
+        "otherConfig": {
+            "connectTimeout": 60000,
+            "responseTimeout": 60000,
+            "certificateAlias": "",
+            "followRedirects": True,
+            "autoRedirects": False,
+        },
+        "authConfig": {
+            "authType": "NONE",
+            "basicAuth": {"userName": "", "password": "", "valid": False},
+            "digestAuth": {"userName": "", "password": "", "valid": False},
+            "httpauthValid": False,
+        },
+        "moduleId": "",
+        "num": None,
+        "mockNum": None,
     }
 
 
-def build_default_response():
-    return [{
-        'id': None,
-        'statusCode': '200',
-        'defaultFlag': True,
-        'name': None,
-        'headers': [],
-        'body': {
-            'bodyType': 'JSON',
-            'jsonBody': {'enableJsonSchema': False, 'jsonValue': '{ }', 'jsonSchema': {'type': 'string', 'properties': {}, 'enable': True}},
-            'xmlBody': {'value': None},
-            'rawBody': {'value': None},
-            'binaryBody': {'sendAsBody': False, 'description': None, 'file': None},
+def build_default_response() -> dict:
+    return {
+        "id": None,
+        "statusCode": "200",
+        "defaultFlag": True,
+        "name": None,
+        "headers": [],
+        "body": {
+            "bodyType": "JSON",
+            "jsonBody": {
+                "enableJsonSchema": False,
+                "jsonValue": "{ }",
+                "jsonSchema": {"type": "string", "properties": {}, "enable": True},
+            },
+            "xmlBody": {"value": None},
+            "rawBody": {"value": None},
+            "binaryBody": {"sendAsBody": False, "description": None, "file": None},
         },
-    }]
+    }
 
 
-def set_assertion(request_obj: dict, expected_code: str):
-    req = copy.deepcopy(request_obj)
-    if req.get('children'):
-        child = req['children'][0]
-        child['assertionConfig'] = {'enableGlobal': False, 'assertions': build_assertions(expected_code)}
-    return req
+def set_assertion(request_obj: dict, expected_code: str) -> dict:
+    request_copy = copy.deepcopy(request_obj)
+    if request_copy.get("children"):
+        request_copy["children"][0]["assertionConfig"] = {
+            "enableGlobal": False,
+            "assertions": build_assertions(expected_code),
+        }
+    return request_copy
 
 
-def build_case_variants_for_api(summary: str, req: dict, has_required: bool, has_params: bool):
+def build_case_variants_for_api(summary: str, request_obj: dict, has_required: bool, has_params: bool, version_id: str) -> list[dict]:
     cases = []
-    success_req = set_assertion(req, '200')
-    cases.append({
-        'name': f'{summary[:180]}-成功场景',
-        'priority': 'P1',
-        'status': 'PROCESSING',
-        'request': success_req,
-        'aiCreate': True,
-    })
+    success_request = set_assertion(request_obj, "200")
+    cases.append(
+        {
+            "projectId": "",
+            "apiDefinitionId": "",
+            "name": f"{summary[:180]}-成功场景",
+            "priority": "P1",
+            "status": "Underway",
+            "versionId": version_id,
+            "request": success_request,
+            "description": "自动生成的成功场景用例",
+            "response": json.dumps(build_default_response(), ensure_ascii=False),
+            "tags": "接口,自动生成",
+        }
+    )
     if has_required:
-        miss = copy.deepcopy(req)
-        for group in ['query', 'rest']:
-            for item in miss.get(group, []):
-                if item.get('required'):
-                    item['value'] = ''
+        missing = copy.deepcopy(request_obj)
+        for group in ["query", "rest"]:
+            for item in missing.get(group, []):
+                if item.get("required"):
+                    item["value"] = ""
                     break
-        miss = set_assertion(miss, '400')
-        cases.append({
-            'name': f'{summary[:180]}-必填缺失',
-            'priority': 'P1',
-            'status': 'PROCESSING',
-            'request': miss,
-            'aiCreate': True,
-        })
+        missing = set_assertion(missing, "400")
+        cases.append(
+            {
+                "projectId": "",
+                "apiDefinitionId": "",
+                "name": f"{summary[:180]}-必填缺失",
+                "priority": "P1",
+                "status": "Underway",
+                "versionId": version_id,
+                "request": missing,
+                "description": "自动生成的必填缺失场景",
+                "response": json.dumps(build_default_response(), ensure_ascii=False),
+                "tags": "接口,自动生成",
+            }
+        )
     if has_params:
-        edge = copy.deepcopy(req)
-        for group in ['query', 'rest']:
+        edge = copy.deepcopy(request_obj)
+        for group in ["query", "rest"]:
             for item in edge.get(group, []):
-                if item.get('paramType') == 'string':
-                    item['value'] = 'X' * 128
+                if item.get("paramType") == "string":
+                    item["value"] = "X" * 128
                     break
-        edge = set_assertion(edge, '200')
-        cases.append({
-            'name': f'{summary[:180]}-边界场景',
-            'priority': 'P2',
-            'status': 'PROCESSING',
-            'request': edge,
-            'aiCreate': True,
-        })
+        edge = set_assertion(edge, "200")
+        cases.append(
+            {
+                "projectId": "",
+                "apiDefinitionId": "",
+                "name": f"{summary[:180]}-边界场景",
+                "priority": "P2",
+                "status": "Underway",
+                "versionId": version_id,
+                "request": edge,
+                "description": "自动生成的边界场景",
+                "response": json.dumps(build_default_response(), ensure_ascii=False),
+                "tags": "接口,自动生成",
+            }
+        )
     return cases
 
 
-def build_openapi_import(project_id: str, module_id: str, text: str):
+def build_openapi_import(project_id: str, module_id: str, text: str) -> dict:
     spec = parse_openapi_source(text)
-    defs = []
+    version_id = resolve_version_for_draft(project_id)
+    definitions = []
     cases = []
-    for path, path_item in (spec.get('paths') or {}).items():
+    for path, path_item in (spec.get("paths") or {}).items():
         if not isinstance(path_item, dict):
             continue
-        for method in ['get', 'post', 'put', 'delete', 'patch', 'head', 'options']:
+        for method in ["get", "post", "put", "delete", "patch", "head", "options"]:
             if method not in path_item:
                 continue
-            op = path_item[method] or {}
-            summary = op.get('summary') or op.get('operationId') or f'{method.upper()} {path}'
-            req = build_http_request(method, path, summary, op)
+            operation = path_item[method] or {}
+            summary = operation.get("summary") or operation.get("operationId") or f"{method.upper()} {path}"
+            request_obj = build_http_request(method, path, summary, operation)
             definition = {
-                'projectId': project_id,
-                'moduleId': module_id,
-                'name': summary[:255],
-                'protocol': 'HTTP',
-                'method': method.upper(),
-                'path': path,
-                'status': 'PROCESSING',
-                'description': op.get('description') or '',
-                'request': req,
-                'response': build_default_response(),
+                "projectId": project_id,
+                "moduleId": module_id,
+                "name": summary[:255],
+                "protocol": "HTTP",
+                "method": method.upper(),
+                "path": path,
+                "status": "Underway",
+                "description": operation.get("description") or "",
+                "request": request_obj,
+                "response": json.dumps(build_default_response(), ensure_ascii=False),
+                "versionId": version_id,
+                "tags": "接口,自动生成",
             }
-            defs.append(definition)
-            has_required = any(x.get('required') for x in req.get('query', []) + req.get('rest', []))
-            has_params = bool(req.get('query') or req.get('rest'))
-            cases.append(build_case_variants_for_api(summary, req, has_required, has_params))
-    return {'definitions': defs, 'cases': cases}
+            definitions.append(definition)
+            has_required = any(item.get("required") for item in request_obj.get("query", []) + request_obj.get("rest", []))
+            has_params = bool(request_obj.get("query") or request_obj.get("rest"))
+            case_list = build_case_variants_for_api(summary, request_obj, has_required, has_params, version_id)
+            for case in case_list:
+                case["projectId"] = project_id
+            cases.append(case_list)
+    return {"definitions": definitions, "cases": cases}
 
 
-def main():
+def main() -> None:
     if len(sys.argv) < 2:
         print(USAGE, file=sys.stderr)
-        sys.exit(1)
+        raise SystemExit(1)
     mode = sys.argv[1]
-    if mode == 'functional-cases':
-        if len(sys.argv) != 6:
-            print(USAGE, file=sys.stderr)
-            sys.exit(1)
-        project_id, module_id, template_id, req_file = sys.argv[2:6]
-        text = load_text(req_file)
-        print(json.dumps(build_functional_cases(project_id, module_id, template_id, text), ensure_ascii=False, indent=2))
-    elif mode == 'api-import':
+    if mode == "functional-cases":
         if len(sys.argv) != 5:
             print(USAGE, file=sys.stderr)
-            sys.exit(1)
-        project_id, module_id, src = sys.argv[2:5]
-        text = load_text(src)
+            raise SystemExit(1)
+        project_id, module_id, requirement_file = sys.argv[2:5]
+        text = load_text(requirement_file)
+        print(json.dumps(build_functional_cases(project_id, module_id, text), ensure_ascii=False, indent=2))
+        return
+    if mode == "api-import":
+        if len(sys.argv) != 5:
+            print(USAGE, file=sys.stderr)
+            raise SystemExit(1)
+        project_id, module_id, source = sys.argv[2:5]
+        text = load_text(source)
         print(json.dumps(build_openapi_import(project_id, module_id, text), ensure_ascii=False, indent=2))
-    else:
-        print(USAGE, file=sys.stderr)
-        sys.exit(1)
+        return
+    print(USAGE, file=sys.stderr)
+    raise SystemExit(1)
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     main()

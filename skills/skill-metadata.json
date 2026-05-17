@@ -1,8 +1,8 @@
 {
   "name": "metersphere",
-  "description": "通过 MeterSphere API 查询项目、模块、模板、功能用例、接口定义、接口用例，并支持根据需求生成并写入功能用例、根据 Swagger/OpenAPI 生成并写入接口定义与接口用例。",
+  "description": "面向 MeterSphere 2.x 的本地技能包，支持 workspace/project/module 查询、功能用例生成与写入、Swagger/OpenAPI 导入 API 定义与 API 用例、评审汇总与单用例报告。",
   "version": "1.0.0",
-  "author": "OpenClaw Skills",
+  "author": "Codex Skills",
   "requiredEnvVars": [
     "METERSPHERE_BASE_URL",
     "METERSPHERE_ACCESS_KEY",
@@ -14,11 +14,10 @@
     "curl"
   ],
   "optionalEnvVars": [
+    "METERSPHERE_WORKSPACE_ID",
     "METERSPHERE_PROJECT_ID",
-    "METERSPHERE_ORGANIZATION_ID",
     "METERSPHERE_HEADERS_JSON",
-    "METERSPHERE_PROTOCOLS_JSON",
-    "METERSPHERE_DEFAULT_TEMPLATE_ID",
+    "METERSPHERE_PROTOCOL",
     "METERSPHERE_DEFAULT_VERSION_ID"
   ],
   "securityNotes": [
@@ -26,7 +25,7 @@
     "建议使用只读 API 密钥进行查询操作",
     "为创建操作使用单独的、有限权限的密钥",
     "METERSPHERE_HEADERS_JSON 可注入任意 HTTP 头，请谨慎使用",
-    "脚本中包含硬编码的 templateId 和 versionId 值，建议在使用前检查并替换"
+    "MeterSphere 2.x 为分模块网关，请使用脚本内置的 2.x 路径映射而不是手写请求路径"
   ],
-  "usage": "用户提到 MeterSphere、测试用例、功能用例、接口用例、Swagger/OpenAPI 导入、批量写入测试资产、用例评审、评审单、哪些用例被评审过、我的待评审、评审状态统计、某个功能用例详情、关联缺陷数量、评审记录时使用。"
+  "usage": "用户提到 MeterSphere 2.x、workspace、项目、功能用例、接口用例、Swagger/OpenAPI 导入、批量写入测试资产、用例评审、评审单、哪些用例被评审过、评审状态统计、某个功能用例详情、关联缺陷数量、评审记录时使用。"
 }

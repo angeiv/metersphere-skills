@@ -1,188 +1,18 @@
 #!/usr/bin/env python3
 import json
-import os
 import sys
 from pathlib import Path
-from urllib import request, error
 
-try:
-    from dotenv import load_dotenv
-except ImportError:
-    def load_dotenv(dotenv_path=None):
-        if dotenv_path and os.path.exists(dotenv_path):
-            with open(dotenv_path, 'r', encoding='utf-8') as f:
-                for line in f:
-                    line = line.strip()
-                    if line and not line.startswith('#') and '=' in line:
-                        k, v = line.split('=', 1)
-                        os.environ[k.strip()] = v.strip().strip('"').strip("'")
+ROOT_DIR = Path(__file__).resolve().parents[2]
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
 
-SCRIPT_DIR = Path(__file__).resolve().parent
-SKILL_DIR = SCRIPT_DIR.parent
-ENV_FILE = SKILL_DIR / '.env'
-if ENV_FILE.exists():
-    load_dotenv(ENV_FILE)
-
-BASE_URL = os.environ.get('METERSPHERE_BASE_URL', '').rstrip('/')
-ACCESS_KEY = os.environ.get('METERSPHERE_ACCESS_KEY') or os.environ.get('METERSPHERE_ACCESS_KEY', '')
-SECRET_KEY = os.environ.get('METERSPHERE_SECRET_KEY') or os.environ.get('METERSPHERE_SECRET_KEY', '')
-PROJECT_ID = os.environ.get('METERSPHERE_PROJECT_ID', '')
-ORG_ID = os.environ.get('METERSPHERE_ORGANIZATION_ID', '100001')
-HEADERS_JSON = os.environ.get('METERSPHERE_HEADERS_JSON', '')
-PROTOCOLS_JSON = os.environ.get('METERSPHERE_PROTOCOLS_JSON', '["HTTP"]')
-ORGANIZATION_LIST_PATH = os.environ.get('METERSPHERE_ORGANIZATION_LIST_PATH', '/system/organization/list')
-PROJECT_LIST_PATH = os.environ.get('METERSPHERE_PROJECT_LIST_PATH', '/project/list/options/{organizationId}')
-PROJECT_LIST_SYSTEM_PATH = os.environ.get('METERSPHERE_PROJECT_LIST_SYSTEM_PATH', '/system/project/list')
-PROJECT_LIST_BY_ORG_PATH = os.environ.get('METERSPHERE_PROJECT_LIST_BY_ORG_PATH', '/organization/project/list/{organizationId}')
-FUNCTIONAL_MODULE_TREE_PATH = os.environ.get('METERSPHERE_FUNCTIONAL_MODULE_TREE_PATH', '/functional/case/module/tree/{projectId}')
-FUNCTIONAL_TEMPLATE_FIELD_PATH = os.environ.get('METERSPHERE_FUNCTIONAL_TEMPLATE_FIELD_PATH', '/functional/case/default/template/field/{projectId}')
-API_MODULE_TREE_PATH = os.environ.get('METERSPHERE_API_MODULE_TREE_PATH', '/api/definition/module/tree')
-FUNCTIONAL_CASE_REVIEW_LIST_PATH = os.environ.get('METERSPHERE_FUNCTIONAL_CASE_REVIEW_LIST_PATH', '/functional/case/review/page')
-CASE_REVIEW_LIST_PATH = os.environ.get('METERSPHERE_CASE_REVIEW_LIST_PATH', '/case/review/page')
-CASE_REVIEW_GET_PATH = os.environ.get('METERSPHERE_CASE_REVIEW_GET_PATH', '/case/review/detail/{id}')
-CASE_REVIEW_CREATE_PATH = os.environ.get('METERSPHERE_CASE_REVIEW_CREATE_PATH', '/case/review/add')
-CASE_REVIEW_DETAIL_PAGE_PATH = os.environ.get('METERSPHERE_CASE_REVIEW_DETAIL_PAGE_PATH', '/case/review/detail/page')
-CASE_REVIEW_MODULE_TREE_PATH = os.environ.get('METERSPHERE_CASE_REVIEW_MODULE_TREE_PATH', '/case/review/module/tree/{projectId}')
-CASE_REVIEW_USER_OPTION_PATH = os.environ.get('METERSPHERE_CASE_REVIEW_USER_OPTION_PATH', '/case/review/user-option/{projectId}')
-
-PATHS = {
-    'organization': {'list': ORGANIZATION_LIST_PATH, 'get': '', 'create': ''},
-    'project': {'list': PROJECT_LIST_PATH, 'get': '', 'create': ''},
-    'functional-module': {'list': FUNCTIONAL_MODULE_TREE_PATH, 'get': '', 'create': ''},
-    'functional-template': {'list': FUNCTIONAL_TEMPLATE_FIELD_PATH, 'get': '', 'create': ''},
-    'api-module': {'list': API_MODULE_TREE_PATH, 'get': '', 'create': ''},
-    'functional-case': {
-        'list': os.environ.get('METERSPHERE_FUNCTIONAL_CASE_LIST_PATH', '/functional/case/page'),
-        'get': os.environ.get('METERSPHERE_FUNCTIONAL_CASE_GET_PATH', '/functional/case/detail/{id}'),
-        'create': os.environ.get('METERSPHERE_FUNCTIONAL_CASE_CREATE_PATH', '/functional/case/add'),
-    },
-    'functional-case-review': {
-        'list': FUNCTIONAL_CASE_REVIEW_LIST_PATH,
-        'get': '',
-        'create': '',
-    },
-    'case-review': {
-        'list': CASE_REVIEW_LIST_PATH,
-        'get': CASE_REVIEW_GET_PATH,
-        'create': CASE_REVIEW_CREATE_PATH,
-    },
-    'case-review-detail': {
-        'list': CASE_REVIEW_DETAIL_PAGE_PATH,
-        'get': '',
-        'create': '',
-    },
-    'case-review-module': {
-        'list': CASE_REVIEW_MODULE_TREE_PATH,
-        'get': '',
-        'create': '',
-    },
-    'case-review-user': {
-        'list': CASE_REVIEW_USER_OPTION_PATH,
-        'get': '',
-        'create': '',
-    },
-    'api': {
-        'list': os.environ.get('METERSPHERE_API_DEFINITION_LIST_PATH', '/api/definition/page'),
-        'get': os.environ.get('METERSPHERE_API_DEFINITION_GET_PATH', '/api/definition/get-detail/{id}'),
-        'create': os.environ.get('METERSPHERE_API_DEFINITION_CREATE_PATH', '/api/definition/add'),
-    },
-    'api-case': {
-        'list': os.environ.get('METERSPHERE_API_CASE_LIST_PATH', '/api/case/page'),
-        'get': os.environ.get('METERSPHERE_API_CASE_GET_PATH', '/api/case/get-detail/{id}'),
-        'create': os.environ.get('METERSPHERE_API_CASE_CREATE_PATH', '/api/case/add'),
-    },
-}
+from skills.scripts import ms_client
 
 
-def die(msg: str):
-    print(f'错误: {msg}', file=sys.stderr)
-    sys.exit(1)
-
-
-def generate_signature():
-    try:
-        import uuid, time, base64
-        from Crypto.Cipher import AES
-        from Crypto.Util.Padding import pad
-        plain = f"{ACCESS_KEY}|{uuid.uuid4()}|{int(time.time() * 1000)}".encode('utf-8')
-        cipher = AES.new(SECRET_KEY.encode('utf-8'), AES.MODE_CBC, ACCESS_KEY.encode('utf-8'))
-        encrypted = cipher.encrypt(pad(plain, AES.block_size))
-        return base64.b64encode(encrypted).decode('utf-8')
-    except Exception:
-        import uuid, time, subprocess
-        plain = f"{ACCESS_KEY}|{uuid.uuid4()}|{int(time.time() * 1000)}"
-        proc = subprocess.run([
-            'openssl', 'enc', '-aes-128-cbc',
-            '-K', SECRET_KEY.encode('utf-8').hex(),
-            '-iv', ACCESS_KEY.encode('utf-8').hex(),
-            '-base64', '-A', '-nosalt'
-        ], input=plain.encode('utf-8'), capture_output=True, check=True)
-        return proc.stdout.decode('utf-8').strip()
-
-
-def make_headers():
-    headers = {'Content-Type': 'application/json'}
-    if not ACCESS_KEY:
-        die('未设置 METERSPHERE_ACCESS_KEY')
-    if not SECRET_KEY:
-        die('未设置 METERSPHERE_SECRET_KEY')
-    headers['accessKey'] = ACCESS_KEY
-    headers['signature'] = generate_signature()
-    if HEADERS_JSON:
-        headers.update(json.loads(HEADERS_JSON))
-    return headers
-
-
-def normalize_payload(resource: str, raw: str):
-    data = json.loads(raw)
-    if isinstance(data, dict):
-        if PROJECT_ID and not data.get('projectId'):
-            data['projectId'] = PROJECT_ID
-        if ORG_ID and not data.get('organizationId'):
-            data['organizationId'] = ORG_ID
-        if resource in ('api', 'api-case') and not data.get('protocols'):
-            try:
-                data['protocols'] = json.loads(PROTOCOLS_JSON)
-            except Exception:
-                data['protocols'] = ['HTTP']
-    return data
-
-
-def default_list_payload(resource: str, keyword: str):
-    data = {'current': 1, 'pageSize': 20}
-    if keyword:
-        data['keyword'] = keyword
-    if PROJECT_ID:
-        data['projectId'] = PROJECT_ID
-    if ORG_ID:
-        data['organizationId'] = ORG_ID
-    if resource in ('api', 'api-case'):
-        try:
-            data['protocols'] = json.loads(PROTOCOLS_JSON)
-        except Exception:
-            data['protocols'] = ['HTTP']
-    return data
-
-
-def do_request(method: str, path: str, body=None):
-    if not BASE_URL:
-        die('未设置 METERSPHERE_BASE_URL')
-    url = BASE_URL + path
-    data = None if body is None else json.dumps(body, ensure_ascii=False).encode('utf-8')
-    req = request.Request(url, data=data, headers=make_headers(), method=method.upper())
-    try:
-        with request.urlopen(req) as resp:
-            charset = resp.headers.get_content_charset() or 'utf-8'
-            print(resp.read().decode(charset, errors='replace'))
-    except error.HTTPError as e:
-        detail = e.read().decode('utf-8', errors='replace')
-        die(f'HTTP {e.code}: {detail}')
-    except Exception as e:
-        die(str(e))
-
-
-def usage():
-    print('''ms — MeterSphere CLI
+def usage() -> None:
+    print(
+        """ms — MeterSphere 2.x CLI
 
 用法:
   ms <resource> <action> [args...]
@@ -192,7 +22,7 @@ def usage():
   ms case-report-md <projectId> <caseId>
 
 资源:
-  organization
+  workspace
   project
   functional-module
   functional-template
@@ -212,109 +42,237 @@ def usage():
   create <JSON>
 
 示例:
-  ms organization list
-  ms organization list 默认
+  ms workspace list
   ms project list
-  ms project list all
-  ms project list 100001
-  ms functional-module list 100001100001
-  ms functional-template list 100001100001
-  ms api-module list 100001100001
+  ms project list <workspaceId>
+  ms functional-module list <projectId>
+  ms functional-template list <projectId>
+  ms api-module list <projectId>
   ms functional-case list 登录
-  ms functional-case-review list '{"caseId":"922301316472832"}'
-  ms case-review list '{"projectId":"<your-project-id>"}'
-  ms case-review get <review-id>
-  ms case-review-detail list '{"projectId":"<your-project-id>","reviewId":"<review-id>","viewStatusFlag":false}'
-  ms case-review-module list <your-project-id>
-  ms case-review-user list <your-project-id>
-  # 注意: 请将 <your-project-id> 和 <review-id> 替换为实际的值，避免使用硬编码的示例值
-''')
+  ms functional-case-review list '{"projectId":"<project-id>","caseId":"<case-id>"}'
+  ms case-review list '{"projectId":"<project-id>"}'
+  ms case-review-detail list '{"projectId":"<project-id>","reviewId":"<review-id>"}'
+  ms api list '{"projectId":"<project-id>","protocol":"HTTP"}'
+"""
+    )
 
 
-def main():
+def print_json(payload) -> None:
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+
+
+def list_workspace(config: ms_client.MeterSphereConfig) -> None:
+    print_json(ms_client.request_json(config, "GET", ms_client.resource_paths("workspace")["list"]))
+
+
+def list_project(config: ms_client.MeterSphereConfig, arg: str) -> None:
+    if arg == "all":
+        path = ms_client.project_list_path("")
+    else:
+        workspace_id = arg or config.workspace_id
+        path = ms_client.project_list_path(workspace_id)
+    print_json(ms_client.request_json(config, "GET", path))
+
+
+def list_functional_module(config: ms_client.MeterSphereConfig, arg: str) -> None:
+    project_id = ms_client.ensure_project_id(config, arg or None)
+    print_json(ms_client.request_json(config, "GET", ms_client.functional_module_path(project_id)))
+
+
+def list_functional_template(config: ms_client.MeterSphereConfig, arg: str) -> None:
+    project_id = ms_client.ensure_project_id(config, arg or None)
+    print_json(ms_client.request_json(config, "GET", ms_client.functional_template_path(project_id)))
+
+
+def list_api_module(config: ms_client.MeterSphereConfig, arg: str) -> None:
+    project_id = ms_client.ensure_project_id(config, arg or None)
+    print_json(ms_client.request_json(config, "GET", ms_client.api_module_path(project_id, config.protocol)))
+
+
+def list_case_review_module(config: ms_client.MeterSphereConfig, arg: str) -> None:
+    project_id = ms_client.ensure_project_id(config, arg or None)
+    payload = {"projectId": project_id}
+    print_json(
+        ms_client.request_json(
+            config,
+            "POST",
+            ms_client.resource_paths("case-review-module")["list"].replace("{projectId}", project_id),
+            payload,
+        )
+    )
+
+
+def list_case_review_user(config: ms_client.MeterSphereConfig, arg: str) -> None:
+    project_id = ms_client.ensure_project_id(config, arg or None)
+    print_json(
+        ms_client.request_json(
+            config,
+            "GET",
+            ms_client.resource_paths("case-review-user")["list"].replace("{projectId}", project_id),
+        )
+    )
+
+
+def list_functional_case_review(config: ms_client.MeterSphereConfig, arg: str) -> None:
+    from skills.scripts import ms_review_summary
+
+    if arg.startswith("{"):
+        body = ms_client.normalize_body("functional-case-review", arg, config)
+    elif arg:
+        body = {"caseId": arg}
+    else:
+        body = {"projectId": config.project_id} if config.project_id else {}
+
+    project_id = body.get("projectId") or config.project_id
+    review_id = body.get("reviewId")
+    case_id = body.get("caseId") or body.get("id")
+
+    if review_id:
+        if not project_id:
+            ms_client.die("functional-case-review 按 reviewId 查询时需要 projectId")
+        items = ms_review_summary.fetch_review_case_items(project_id, review_id)
+        print_json(ms_client.enrich_review_entries(config, items))
+        return
+
+    if case_id:
+        if not project_id:
+            ms_client.die("functional-case-review 按 caseId 查询时需要 projectId")
+        print_json(ms_review_summary.fetch_case_reviews(project_id, case_id))
+        return
+
+    if not project_id:
+        ms_client.die("functional-case-review 需要 projectId 或 caseId")
+    print_json(ms_review_summary.fetch_all_case_review_entries(project_id))
+
+
+def list_generic(config: ms_client.MeterSphereConfig, resource: str, arg: str) -> None:
+    normalized = ms_client.normalize_resource(resource)
+    if normalized == "workspace":
+        list_workspace(config)
+        return
+    if normalized == "project":
+        list_project(config, arg)
+        return
+    if normalized == "functional-module":
+        list_functional_module(config, arg)
+        return
+    if normalized == "functional-template":
+        list_functional_template(config, arg)
+        return
+    if normalized == "api-module":
+        list_api_module(config, arg)
+        return
+    if normalized == "case-review-module":
+        list_case_review_module(config, arg)
+        return
+    if normalized == "case-review-user":
+        list_case_review_user(config, arg)
+        return
+    if normalized == "functional-case-review":
+        list_functional_case_review(config, arg)
+        return
+
+    paths = ms_client.resource_paths(normalized)
+    if arg.startswith("{"):
+        body = ms_client.normalize_body(normalized, arg, config)
+    else:
+        body = ms_client.build_default_query_payload(normalized, arg, config)
+    items = ms_client.paginated_post(config, paths["list"], body, page_size=config.page_size)
+    print_json(items)
+
+
+def get_generic(config: ms_client.MeterSphereConfig, resource: str, identifier: str) -> None:
+    if not identifier:
+        ms_client.die("get 需要 id")
+    path = ms_client.resource_paths(resource)["get"]
+    if not path:
+        ms_client.die(f"资源 {resource} 不支持 get")
+    print_json(ms_client.request_json(config, "GET", ms_client.replace_first_placeholder(path, identifier)))
+
+
+def create_generic(config: ms_client.MeterSphereConfig, resource: str, raw_body: str) -> None:
+    if not raw_body:
+        ms_client.die("create 需要 JSON body")
+    body = ms_client.normalize_body(resource, raw_body, config)
+    multipart = ms_client.get_create_multipart_config(resource)
+    response = ms_client.multipart_request(
+        config,
+        "POST",
+        ms_client.resource_paths(resource)["create"],
+        body,
+        request_field_name=multipart["field_name"],
+        files_field_name=multipart["files_field"],
+        files=[],
+    )
+    print_json(response)
+
+
+def main() -> None:
+    config = ms_client.get_config()
     if len(sys.argv) < 2:
         usage()
-        sys.exit(1)
+        raise SystemExit(1)
 
-    cmd = sys.argv[1]
-    if cmd in ('help', '-h', '--help'):
+    command = sys.argv[1]
+    if command in {"help", "-h", "--help"}:
         usage()
         return
 
-    if cmd == 'raw':
+    if command == "raw":
         if len(sys.argv) < 4:
-            die('raw 需要 METHOD 和 PATH')
+            ms_client.die("raw 需要 METHOD 和 PATH")
         method = sys.argv[2]
         path = sys.argv[3]
         body = json.loads(sys.argv[4]) if len(sys.argv) > 4 else None
-        do_request(method, path, body)
+        print_json(ms_client.request_json(config, method, path, body))
         return
 
-    resource = cmd
-    if resource not in PATHS:
-        die(f'不支持的资源: {resource}')
+    if command == "reviewed-summary":
+        from skills.scripts import ms_review_summary
+
+        project_id = sys.argv[2] if len(sys.argv) > 2 else config.project_id
+        keyword = sys.argv[3] if len(sys.argv) > 3 else ""
+        if not project_id:
+            ms_client.die("reviewed-summary 需要 projectId")
+        print_json(ms_review_summary.build_summary_report(project_id, keyword))
+        return
+
+    if command == "case-report":
+        from skills.scripts import ms_case_report
+
+        if len(sys.argv) != 4:
+            ms_client.die("用法: ms case-report <projectId> <caseId>")
+        print_json(ms_case_report.build_case_report(sys.argv[2], sys.argv[3]))
+        return
+
+    if command == "case-report-md":
+        from skills.scripts import ms_case_report
+        from skills.scripts import ms_case_report_md
+
+        if len(sys.argv) != 4:
+            ms_client.die("用法: ms case-report-md <projectId> <caseId>")
+        report = ms_case_report.build_case_report(sys.argv[2], sys.argv[3])
+        print(ms_case_report_md.md_lines(report))
+        return
+
+    resource = command
     if len(sys.argv) < 3:
-        die('缺少 action')
+        ms_client.die("缺少 action")
     action = sys.argv[2]
+    arg = sys.argv[3] if len(sys.argv) > 3 else ""
 
-    if action == 'list':
-        arg = sys.argv[3] if len(sys.argv) > 3 else ''
-        if resource == 'organization':
-            if arg.startswith('{'):
-                body = json.loads(arg)
-            elif arg:
-                body = {'current': 1, 'pageSize': 20, 'keyword': arg}
-            else:
-                body = {'current': 1, 'pageSize': 20}
-            do_request('POST', ORGANIZATION_LIST_PATH, body)
-        elif resource == 'project':
-            if arg == 'all':
-                do_request('GET', PROJECT_LIST_SYSTEM_PATH)
-            elif arg:
-                do_request('GET', PROJECT_LIST_BY_ORG_PATH.replace('{organizationId}', arg))
-            else:
-                do_request('GET', PROJECT_LIST_PATH.replace('{organizationId}', ORG_ID))
-        elif resource == 'functional-module':
-            project_id = arg or PROJECT_ID
-            if not project_id:
-                die('functional-module list 需要 projectId')
-            do_request('GET', FUNCTIONAL_MODULE_TREE_PATH.replace('{projectId}', project_id))
-        elif resource == 'functional-template':
-            project_id = arg or PROJECT_ID
-            if not project_id:
-                die('functional-template list 需要 projectId')
-            do_request('GET', FUNCTIONAL_TEMPLATE_FIELD_PATH.replace('{projectId}', project_id))
-        elif resource == 'api-module':
-            project_id = arg or PROJECT_ID
-            if not project_id:
-                die('api-module list 需要 projectId')
-            do_request('POST', API_MODULE_TREE_PATH, {'projectId': project_id, 'protocols': json.loads(PROTOCOLS_JSON)})
-        elif resource == 'case-review-module':
-            project_id = arg or PROJECT_ID
-            if not project_id:
-                die('case-review-module list 需要 projectId')
-            do_request('GET', CASE_REVIEW_MODULE_TREE_PATH.replace('{projectId}', project_id))
-        elif resource == 'case-review-user':
-            project_id = arg or PROJECT_ID
-            if not project_id:
-                die('case-review-user list 需要 projectId')
-            do_request('GET', CASE_REVIEW_USER_OPTION_PATH.replace('{projectId}', project_id))
-        else:
-            body = normalize_payload(resource, arg) if arg.startswith('{') else default_list_payload(resource, arg)
-            do_request('POST', PATHS[resource]['list'], body)
-    elif action == 'get':
-        if len(sys.argv) < 4:
-            die('get 需要 id')
-        path = PATHS[resource]['get'].replace('{id}', sys.argv[3])
-        do_request('GET', path)
-    elif action == 'create':
-        if len(sys.argv) < 4:
-            die('create 需要 JSON body')
-        body = normalize_payload(resource, sys.argv[3])
-        do_request('POST', PATHS[resource]['create'], body)
+    normalized = ms_client.normalize_resource(resource)
+    ms_client.resource_paths(normalized)
+
+    if action == "list":
+        list_generic(config, normalized, arg)
+    elif action == "get":
+        get_generic(config, normalized, arg)
+    elif action == "create":
+        create_generic(config, normalized, arg)
     else:
-        die(f'不支持的 action: {action}')
+        ms_client.die(f"不支持的 action: {action}")
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

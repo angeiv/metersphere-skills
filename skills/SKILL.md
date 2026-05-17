@@ -1,6 +1,6 @@
 ---
 name: metersphere
-description: 本项目将 MeterSphere REST API 与本地脚本能力整合,为 OpenClaw Agent 提供了一套高效、可复用的 Skills,支持自动生成功能用例、接口定义及接口用例,查询组织、项目、模块、用例评审与缺陷关联等信息,简化了测试资产管理流程,提升了团队的自动化效率。
+description: 本项目将 MeterSphere 2.x REST API 与本地脚本能力整合,为 Codex 等本地代理提供一套高效、可复用的 Skills,支持 workspace/项目/模块查询、功能用例与 API 用例生成写入、评审汇总与单用例报告。
 environment:
   required:
     - METERSPHERE_BASE_URL
@@ -27,7 +27,7 @@ security:
 
 用于:
 
-- 查组织 / 项目 / 模块 / 模板
+- 查 workspace / 项目 / 模块 / 模板
 - 查功能用例 / 接口定义 / 接口用例
 - 查评审单 / 评审详情 / 评审人 / 评审模块
 - 回答"哪些用例被评审过"
@@ -37,7 +37,7 @@ security:
 优先命令:
 
 ```bash
-./scripts/ms.sh organization list
+./scripts/ms.sh workspace list
 ./scripts/ms.sh project list
 ./scripts/ms.sh functional-module list <projectId>
 ./scripts/ms.sh functional-template list <projectId>
@@ -45,10 +45,10 @@ security:
 ./scripts/ms.sh functional-case list '<JSON>'
 ./scripts/ms.sh api list '<JSON>'
 ./scripts/ms.sh api-case list '<JSON>'
-./scripts/ms.sh functional-case-review list '{"caseId":"<功能用例ID>"}'
+./scripts/ms.sh functional-case-review list '{"projectId":"<项目ID>","caseId":"<功能用例ID>"}'
 ./scripts/ms.sh case-review list '{"projectId":"<项目ID>"}'
 ./scripts/ms.sh case-review get <reviewId>
-./scripts/ms.sh case-review-detail list '{"projectId":"<项目ID>","reviewId":"<评审ID>","viewStatusFlag":false}'
+./scripts/ms.sh case-review-detail list '{"projectId":"<项目ID>","reviewId":"<评审ID>"}'
 ./scripts/ms.sh case-review-module list <projectId>
 ./scripts/ms.sh case-review-user list <projectId>
 ./scripts/ms.sh reviewed-summary <projectId> [keyword]
@@ -68,14 +68,14 @@ security:
 默认流程:
 
 ```bash
-./scripts/ms.sh functional-case generate <projectId> <moduleId> <templateId> <requirement-file>
+./scripts/ms.sh functional-case generate <projectId> <moduleId> <requirement-file>
 ./scripts/ms.sh functional-case batch-create <json-file>
 ```
 
 需要一步直写时:
 
 ```bash
-./scripts/ms.sh functional-case generate-create <projectId> <moduleId> <templateId> <requirement-file>
+./scripts/ms.sh functional-case generate-create <projectId> <moduleId> <requirement-file>
 ```
 
 ### 3. Swagger / OpenAPI → 接口定义 + 接口用例
@@ -133,7 +133,7 @@ security:
 
 `case-report` 返回四块:
 
-- `summary`:用例基础信息、缺陷数、评审数、测试计划数、需求数
+- `summary`:用例基础信息、缺陷数、评审数、版本信息、最近执行结果
 - `detail`:前置条件、备注、步骤、标签、附件
 - `bugs`:已关联缺陷列表
 - `reviews`:评审记录列表
@@ -141,20 +141,24 @@ security:
 如果用户追问某条用例的评审来源,再补:
 
 ```bash
-./scripts/ms.sh functional-case-review list '{"caseId":"<功能用例ID>"}'
+./scripts/ms.sh functional-case-review list '{"projectId":"<项目ID>","caseId":"<功能用例ID>"}'
 ```
+
+说明:
+
+- 当前 2.x 实例上, `functional-case-review list` 采用“评审单列表 + 评审单用例列表”的反向索引实现,规避 `caseId` 直查时的 500
 
 如果用户要看某个评审单里的全部用例状态,再补:
 
 ```bash
-./scripts/ms.sh case-review-detail list '{"projectId":"<项目ID>","reviewId":"<评审ID>","viewStatusFlag":false}'
+./scripts/ms.sh case-review-detail list '{"projectId":"<项目ID>","reviewId":"<评审ID>"}'
 ```
 
 判断口径:
 
 - `functional-case-review list` 返回非空:该功能用例可视为**被评审过**
-- `case-review-detail list` 中每条记录的 `status` 代表该用例在该评审单中的当前状态,如:`UN_REVIEWED` / `UNDER_REVIEWED` / `PASS` / `UN_PASS`
-- `functional/case/detail/{id}` 中的 `bugCount` 代表该用例当前关联缺陷数
+- `case-review-detail list` 中每条记录的 `caseReviewStatus` 代表该用例在该评审单中的当前状态
+- `case-report` / `reviewed-summary` 中的 `bugCount` 优先来自 2.x 缺陷关联查询,失败时回退用例详情中的 `issueList`
 
 ## 默认执行顺序
 
@@ -171,14 +175,12 @@ security:
 
 1. 项目 ID
 2. 功能模块 ID
-3. 模板 ID
 
 命令顺序:
 
 ```bash
 ./scripts/ms.sh project list
 ./scripts/ms.sh functional-module list <projectId>
-./scripts/ms.sh functional-template list <projectId>
 ```
 
 ### 生成功能用例后
@@ -244,12 +246,11 @@ METERSPHERE_SECRET_KEY=        # API 密钥(用于本地签名,不传输)
 
 ### 可选环境变量
 ```bash
+METERSPHERE_WORKSPACE_ID=      # 默认 workspace ID
 METERSPHERE_PROJECT_ID=        # 默认项目 ID
-METERSPHERE_ORGANIZATION_ID=100001  # 默认组织 ID
 METERSPHERE_HEADERS_JSON=      # 额外的 HTTP 头(JSON 格式,谨慎使用)
-METERSPHERE_PROTOCOLS_JSON='["HTTP"]'  # 支持的协议
-METERSPHERE_DEFAULT_TEMPLATE_ID= # 默认模板 ID (避免使用硬编码值)
-METERSPHERE_DEFAULT_VERSION_ID=  # 默认版本 ID (避免使用硬编码值)
+METERSPHERE_PROTOCOL=HTTP      # API 模块协议
+METERSPHERE_DEFAULT_VERSION_ID= # 默认版本 ID
 ```
 
 ### 依赖要求

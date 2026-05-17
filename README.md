@@ -1,10 +1,10 @@
-# MeterSphere Skills for OpenClaw
+# MeterSphere Skills for Codex
 
-面向 **OpenClaw Agent** 的 MeterSphere 能力封装。
+面向 **Codex / 本地 Agent** 的 MeterSphere 2.x 能力封装。
 
 本项目将 **MeterSphere REST API** 与本地脚本能力整合为一套可复用的 Skills，使 Agent 能够以更稳定、更可控的方式完成以下工作：
 
-- 查询组织、项目、模块、模板、功能用例、接口定义、接口用例
+- 查询 workspace、项目、模块、模板、功能用例、接口定义、接口用例
 - 根据需求生成并写入 **功能用例**
 - 根据 Swagger / OpenAPI 生成并写入 **接口定义 + 接口用例**
 - 查询 **用例评审**、评审详情、评审状态、评审人
@@ -19,7 +19,7 @@ MeterSphere 本身提供完整的测试资产管理能力，但在日常使用�
 
 - 手工整理需求并编写测试用例
 - 反复从 Swagger / OpenAPI 提取接口并录入系统
-- 查询单条用例的缺陷、评审、测试计划等关联信息
+- 查询单条用例的缺陷、评审等关联信息
 - 统计“哪些用例被评审过”“哪些用例缺陷更多”
 - 在 Agent 场景下临时拼装请求、反复摸索 API 参数
 
@@ -35,11 +35,11 @@ MeterSphere 本身提供完整的测试资产管理能力，但在日常使用�
 
 ## 2. 核心能力
 
-### 2.1 查询能力
+### 2.1 查询能力（MeterSphere 2.x）
 
 支持查询：
 
-- 组织 / 项目
+- workspace / 项目
 - 功能模块 / 功能模板
 - API 模块
 - 功能用例 / 接口定义 / 接口用例
@@ -138,64 +138,60 @@ metersphere-skills/
 
 ## 5. 安装方式
 
-### 5.1 快速开始
+### 5.1 本地使用（推荐）
+
+仓库内直接运行：
 
 ```bash
-# 通过 Clawdhub 安装（推荐，自动处理依赖和更新）
-clawdhub install metersphere
-
+./skills/scripts/ms.sh --help
 ```
 
-### 5.2 手动安装
+### 5.2 安装到 Codex Skills 目录
 
 ```bash
-
-mkdir -p ~/.openclaw/workspace/skills
-cp -R ./skills ~/.openclaw/workspace/skills/metersphere
-
-```
-
-### 5.3 使用安装脚本
-
-```bash
-
 ./install.sh
-
 ```
 
----
+默认会安装到：
+
+```bash
+$HOME/.codex/skills/metersphere
+```
 
 ## 6. 环境配置
 
-编辑：
+编辑 `.env`，最小配置如下：
 
 ```bash
-~/.openclaw/workspace/skills/metersphere/.env
-```
-
-最小配置如下：
-
-```bash
-METERSPHERE_BASE_URL=https://your-metersphere.example.com
+METERSPHERE_BASE_URL=http://your-metersphere-instance:8081
 METERSPHERE_ACCESS_KEY=your_access_key
 METERSPHERE_SECRET_KEY=your_secret_key
 ```
 
-### 参数说明
+推荐补充：
 
-- `METERSPHERE_BASE_URL`：MeterSphere 服务地址
-- `METERSPHERE_ACCESS_KEY`：AK
-- `METERSPHERE_SECRET_KEY`：SK
+```bash
+METERSPHERE_WORKSPACE_ID=your_workspace_id
+METERSPHERE_PROJECT_ID=your_project_id
+METERSPHERE_PROTOCOL=HTTP
+```
+
+说明：
+
+- `workspace list` 用于查询当前账号可访问的工作空间
+- 默认版本 ID 优先读取 `METERSPHERE_DEFAULT_VERSION_ID`
+- 若未显式配置默认版本，脚本会先尝试 `/project/project/version/get-default-version/{projectId}`
+- 如果默认版本接口对当前 AK/SK 返回鉴权失败，脚本会从已有功能/API 用例回退解析 `versionId`
 
 ---
 
 ## 7. 安装后验证
 
 ```bash
-cd ~/.openclaw/workspace/skills/metersphere
+cd ~/.codex/skills/metersphere
 
 ./scripts/ms.sh --help
-./scripts/ms.sh organization list
+./scripts/ms.sh workspace list
 ./scripts/ms.sh project list
 ```
 
@@ -208,7 +204,7 @@ cd ~/.openclaw/workspace/skills/metersphere
 ### 8.1 基础查询
 
 ```bash
-./scripts/ms.sh organization list
+./scripts/ms.sh workspace list
 ./scripts/ms.sh project list
 ./scripts/ms.sh functional-module list <projectId>
 ./scripts/ms.sh functional-template list <projectId>
@@ -221,20 +217,26 @@ cd ~/.openclaw/workspace/skills/metersphere
 ### 8.2 用例评审查询
 
 ```bash
-./scripts/ms.sh functional-case-review list '{"caseId":"<功能用例ID>"}'
+./scripts/ms.sh functional-case-review list '{"projectId":"<项目ID>","caseId":"<功能用例ID>"}'
 ./scripts/ms.sh case-review list '{"projectId":"<项目ID>"}'
 ./scripts/ms.sh case-review get <reviewId>
-./scripts/ms.sh case-review-detail list '{"projectId":"<项目ID>","reviewId":"<评审ID>","viewStatusFlag":false}'
+./scripts/ms.sh case-review-detail list '{"projectId":"<项目ID>","reviewId":"<评审ID>"}'
 ./scripts/ms.sh case-review-module list <projectId>
 ./scripts/ms.sh case-review-user list <projectId>
 ```
 
+说明：
+
+- `case-review-user list` 在 2.x 中返回项目成员，作为评审候选用户近似集合
+- `functional-case-review list` 在当前 2.x 实例上采用“评审单列表 -> 评审单用例列表 -> 反向索引 caseId”的组合查询，绕过 `caseId` 直查 500 的实例问题
+- `functional-template list` 仅用于查看当前项目模板元数据，功能用例创建本身不再要求 `templateId`
+
 ### 8.3 功能用例生成与写入
 
 ```bash
-./scripts/ms.sh functional-case generate <projectId> <moduleId> <templateId> <requirement-file>
+./scripts/ms.sh functional-case generate <projectId> <moduleId> <requirement-file>
 ./scripts/ms.sh functional-case batch-create <json-file>
-./scripts/ms.sh functional-case generate-create <projectId> <moduleId> <templateId> <requirement-file>
+./scripts/ms.sh functional-case generate-create <projectId> <moduleId> <requirement-file>
 ```
 
 ### 8.4 接口定义 / 接口用例生成与写入
@@ -267,6 +269,10 @@ cd ~/.openclaw/workspace/skills/metersphere
 - `bugs`
 - `reviews`
 
+说明：
+
+- `bugs` 优先走 2.x 缺陷关联接口；若实例返回 500，则自动回退到用例详情中的 `issueList`
+
 #### 查询单条功能用例完整画像（Markdown）
 
 ```bash
@@ -291,8 +297,7 @@ cd ~/.openclaw/workspace/skills/metersphere
 ```bash
 ./scripts/ms.sh project list
 ./scripts/ms.sh functional-module list <projectId>
-./scripts/ms.sh functional-template list <projectId>
-./scripts/ms.sh functional-case generate <projectId> <moduleId> <templateId> ./requirement.txt
+./scripts/ms.sh functional-case generate <projectId> <moduleId> ./requirement.txt
 ```
 
 如果需要更高质量内容：
@@ -348,10 +353,9 @@ cd ~/.openclaw/workspace/skills/metersphere
 
 1. `project list`
 2. `functional-module list <projectId>`
-3. `functional-template list <projectId>`
-4. `functional-case generate`
-5. 按 `references/ai-functional-case-prompt.md` 增强
-6. `functional-case batch-create`
+3. `functional-case generate`
+4. 按 `references/ai-functional-case-prompt.md` 增强
+5. `functional-case batch-create`
 
 ### 10.2 接口定义 / 接口用例工作流
 
@@ -408,7 +412,7 @@ cd ~/.openclaw/workspace/skills/metersphere
 
 当前已验证并可稳定使用的能力包括：
 
-- 组织 / 项目 / 模块 / 模板查询
+- workspace / 项目 / 模块 / 模板查询
 - 功能用例详情查询
 - 功能用例评审查询
 - 功能用例关联缺陷查询
