@@ -1,6 +1,6 @@
-# MeterSphere Skills for Codex
+# MeterSphere Skills
 
-面向 **Codex / 本地 Agent** 的 MeterSphere 2.x 能力封装。
+面向本地 AI Agent（编码代理 / 助手）的 MeterSphere 2.x 能力封装。
 
 本项目将 **MeterSphere REST API** 与本地脚本能力整合为一套可复用的 Skills，使 Agent 能够以更稳定、更可控的方式完成以下工作：
 
