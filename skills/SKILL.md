@@ -1,6 +1,6 @@
 ---
 name: metersphere
-description: 本项目将 MeterSphere 2.x REST API 与本地脚本能力整合,为 Codex 等本地代理提供一套高效、可复用的 Skills,支持 workspace/项目/模块查询、功能用例与 API 用例生成写入、评审汇总与单用例报告。
+description: 本项目将 MeterSphere 2.x REST API 与本地脚本能力整合,为本地 AI 代理（Agent / 编码代理）提供一套高效、可复用的 Skills,支持 workspace/项目/模块查询、功能用例与 API 用例生成写入、评审汇总与单用例报告。
 environment:
   required:
     - METERSPHERE_BASE_URL
