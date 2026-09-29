@@ -78,6 +78,8 @@ security:
 ./scripts/ms.sh functional-case generate-create <projectId> <moduleId> <requirement-file>
 ```
 
+写入参数要求(2.x 实测):新建功能模块时请求体须携带 `level`(顶层为 `1`,子模块为其父级 `level + 1`),缺省时服务端解包报 `Value for level cannot be null` 并返回 500;写入功能用例(`POST /track/test/case/add`,multipart 表单,`request` 字段承载用例 JSON)时 `nodePath` 为必填,取模块路径(如顶层模块 `/高可用`),缺省触发数据库非空约束 `Column 'node_path' cannot be null` 并返回 500。用例 JSON 建议字段为 `type=functional`、`method=Manual`、`status=Prepare`、`maintainer`(成员 ID,可用 `case-review-user list <projectId>` 查询)、`tags`(JSON 数组字符串,如 `["HA"]`,而非逗号分隔串)、`customFields="[]"` 与 `steps`(JSON 数组字符串,元素结构 `{num, desc, result}`)。其中 `steps` 必须是可被 JSON `parse` 的合法字符串——若非法(例如最后一条步骤对象缺右花括号 `}` 而以 `]` 直接收尾),写入接口仍会成功入库,但前端对 `steps` 做 `JSON.parse` 会抛 `SyntaxError` 导致步骤展示为空;故生成 steps 后应先用 `json.loads` 自校验再写入。校验写入应以接口返回的新用例 ID 及 `functional-case list` 复查为准,而非仅依赖 HTTP 200;若写入返回通用 500「Internal exception occured」,通常为缺 `level`/`nodePath` 或 `tags` 格式错误,应按上述字段核对后重试,而非反复变更请求体。如需删除误建用例,可调用 `POST /track/test/case/delete/{caseId}`(请求体传 `{}`,成功返回 `data:1`)。
+
 ### 3. Swagger / OpenAPI → 接口定义 + 接口用例
 
 用于:
